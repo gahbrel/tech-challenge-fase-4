@@ -1,0 +1,24 @@
+# Requisitos da Fase 4 — pipeline multimodal (saúde da mulher)
+# Instale por cima do requirements.txt do projeto:
+#   pip install -r requirements.txt -r requirements-fase4.txt
+
+# --- Vídeo (YOLOv8) --------------------------------------------------------- #
+ultralytics>=8.2,<9        # YOLOv8 (treino + inferência); traz torch e opencv
+# opencv-python já vem como dependência do ultralytics
+
+# --- Fusão (LangGraph) ------------------------------------------------------ #
+langgraph>=1.0             # grafo de fusão multimodal (há fallback puro se ausente)
+langchain-core>=1.0
+
+# --- Áudio: caminho de NUVEM (Azure Speech F0) ------------------------------ #
+azure-cognitiveservices-speech>=1.38   # transcrição via Azure AI Speech (tier F0)
+
+# --- Áudio: fallback OFFLINE (opcional) ------------------------------------- #
+# Descomente para usar o Whisper local em vez do Azure:
+# openai-whisper>=20231117
+
+# Observações:
+# - A demonstração roda OFFLINE sem nada disto ser obrigatório: o áudio cai no
+#   backend "mock" (transcript ao lado do arquivo) e o vídeo usa o best.pt demo.
+# - Para o fine-tuning/treino real do YOLOv8, recomenda-se GPU (ex.: Google Colab).
+# - Azure: defina AZURE_SPEECH_KEY e AZURE_SPEECH_REGION (recurso no tier F0).
