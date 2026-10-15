@@ -3,17 +3,19 @@ multimodal_graph.py
 -------------------
 Camada de FUSÃO multimodal (Fase 4), com LangGraph.
 
-Recebe os relatórios estruturados de vídeo (YOLOv8) e áudio (Azure/Whisper +
-análise psicológica), funde os achados, decide o nível de risco combinado e
-dispara o alerta para a equipe especializada — registrando tudo na auditoria.
+Recebe os relatórios estruturados das modalidades — vídeo (YOLOv8: instrumentos
+e postura), áudio (Azure/Whisper + análise psicológica/acústica) e sinais vitais
+(detecção de anomalias) — funde os achados, decide o nível de risco combinado e
+dispara o alerta para a equipe especializada, registrando tudo na auditoria.
 
 É o mesmo padrão de fluxo da Fase 3 (triagem → decisão → alerta → auditoria),
-agora coordenando múltiplas modalidades. Segue o projeto: usa LangGraph quando
-disponível e cai num runner Python puro caso contrário (roda em qualquer máquina).
+agora coordenando múltiplas modalidades. Usa LangGraph quando disponível e cai
+num runner Python puro caso contrário (roda em qualquer máquina).
 
 Grafo:
 
-    receber_video → receber_audio → fundir → (risco?) → emitir_alerta | registrar_ok → consolidar
+    receber_video → receber_audio → receber_vitais → receber_postura
+        → fundir → (risco?) → emitir_alerta | registrar_ok → consolidar
 """
 
 from __future__ import annotations
@@ -38,13 +40,25 @@ except Exception:  # pragma: no cover
 _NIVEL_ORDEM = {"verde": 0, "amarelo": 1, "vermelho": 2}
 _ORDEM_NIVEL = {v: k for k, v in _NIVEL_ORDEM.items()}
 
+# Modalidades fundidas: (chave do relatório, chave do nível, rótulo, campo de achados)
+_MODALIDADES = [
+    ("relatorio_video", "nivel_video", "vídeo", "anomalias"),
+    ("relatorio_audio", "nivel_audio", "áudio", "sinais"),
+    ("relatorio_vitais", "nivel_vitais", "sinais vitais", "sinais"),
+    ("relatorio_postura", "nivel_postura", "postura", "sinais"),
+]
+
 
 class EstadoFusao(TypedDict, total=False):
     paciente_id: str
     relatorio_video: Dict
     relatorio_audio: Dict
+    relatorio_vitais: Dict
+    relatorio_postura: Dict
     nivel_video: str
     nivel_audio: str
+    nivel_vitais: str
+    nivel_postura: str
     nivel_final: str
     achados: List[str]
     alerta: Optional[str]
@@ -53,36 +67,33 @@ class EstadoFusao(TypedDict, total=False):
 
 
 class FusaoMultimodal:
-    """Funde os relatórios de vídeo e áudio e emite o alerta consolidado."""
+    """Funde os relatórios das modalidades e emite o alerta consolidado."""
 
     def __init__(self, auditor=None):
         self.auditor = auditor or (AuditLogger() if AuditLogger else None)
         self.app = self._compilar()
 
-    # ---- nós ------------------------------------------------------------- #
-    def _no_receber_video(self, estado: EstadoFusao) -> EstadoFusao:
-        rv = estado.get("relatorio_video") or {}
-        trilha = estado.get("trilha", []) + ["receber_video"]
-        return {**estado, "nivel_video": rv.get("nivel_alerta", "verde"), "trilha": trilha}
+    # ---- nós de recepção (um por modalidade) ----------------------------- #
+    def _receber(self, estado: EstadoFusao, rel_key: str, nivel_key: str, nome: str) -> EstadoFusao:
+        rel = estado.get(rel_key) or {}
+        trilha = estado.get("trilha", []) + [f"receber_{nivel_key.split('_')[1]}"]
+        return {**estado, nivel_key: rel.get("nivel_alerta", "verde"), "trilha": trilha}
 
-    def _no_receber_audio(self, estado: EstadoFusao) -> EstadoFusao:
-        ra = estado.get("relatorio_audio") or {}
-        trilha = estado.get("trilha", []) + ["receber_audio"]
-        return {**estado, "nivel_audio": ra.get("nivel_alerta", "verde"), "trilha": trilha}
+    def _no_receber_video(self, e): return self._receber(e, "relatorio_video", "nivel_video", "vídeo")
+    def _no_receber_audio(self, e): return self._receber(e, "relatorio_audio", "nivel_audio", "áudio")
+    def _no_receber_vitais(self, e): return self._receber(e, "relatorio_vitais", "nivel_vitais", "sinais vitais")
+    def _no_receber_postura(self, e): return self._receber(e, "relatorio_postura", "nivel_postura", "postura")
 
     def _no_fundir(self, estado: EstadoFusao) -> EstadoFusao:
-        nv = estado.get("nivel_video", "verde")
-        na = estado.get("nivel_audio", "verde")
-        # Fusão: o maior nível entre as modalidades prevalece.
-        final = _ORDEM_NIVEL[max(_NIVEL_ORDEM[nv], _NIVEL_ORDEM[na])]
+        # Fusão: o maior nível entre TODAS as modalidades prevalece.
+        niveis = [_NIVEL_ORDEM[estado.get(nk, "verde")] for _, nk, _, _ in _MODALIDADES]
+        final = _ORDEM_NIVEL[max(niveis)]
 
         achados: List[str] = []
-        rv = estado.get("relatorio_video") or {}
-        ra = estado.get("relatorio_audio") or {}
-        for a in rv.get("anomalias", []):
-            achados.append(f"[vídeo] {a}")
-        for s in ra.get("sinais", []):
-            achados.append(f"[áudio] {s}")
+        for rel_key, _, rotulo, campo in _MODALIDADES:
+            rel = estado.get(rel_key) or {}
+            for a in rel.get(campo, []):
+                achados.append(f"[{rotulo}] {a}")
 
         trilha = estado.get("trilha", []) + ["fundir"]
         return {**estado, "nivel_final": final, "achados": achados, "trilha": trilha}
@@ -94,7 +105,7 @@ class FusaoMultimodal:
         alerta = (
             f"🚨 ALERTA MULTIMODAL — paciente {pid} | risco {nivel.upper()}. "
             f"Acionar equipe especializada. Achados: "
-            + ("; ".join(achados) if achados else "sinais combinados de vídeo/áudio.")
+            + ("; ".join(achados) if achados else "sinais combinados das modalidades.")
         )
         trilha = estado.get("trilha", []) + ["emitir_alerta"]
         self._auditar(estado, alerta)
@@ -106,10 +117,13 @@ class FusaoMultimodal:
         return {**estado, "trilha": trilha}
 
     def _no_consolidar(self, estado: EstadoFusao) -> EstadoFusao:
+        niveis_txt = " | ".join(
+            f"{rotulo}: {estado.get(nk, 'verde')}" for _, nk, rotulo, _ in _MODALIDADES
+        )
         partes = [
             f"Paciente {estado.get('paciente_id','N/D')} | risco combinado: "
             f"{estado.get('nivel_final','verde').upper()}",
-            f"Vídeo: {estado.get('nivel_video','verde')} | Áudio: {estado.get('nivel_audio','verde')}",
+            niveis_txt,
         ]
         if estado.get("achados"):
             partes.append("Achados:\n- " + "\n- ".join(estado["achados"]))
@@ -150,13 +164,17 @@ class FusaoMultimodal:
         g = StateGraph(EstadoFusao)
         g.add_node("receber_video", self._no_receber_video)
         g.add_node("receber_audio", self._no_receber_audio)
+        g.add_node("receber_vitais", self._no_receber_vitais)
+        g.add_node("receber_postura", self._no_receber_postura)
         g.add_node("fundir", self._no_fundir)
         g.add_node("emitir_alerta", self._no_emitir_alerta)
         g.add_node("registrar_ok", self._no_registrar_ok)
         g.add_node("consolidar", self._no_consolidar)
         g.set_entry_point("receber_video")
         g.add_edge("receber_video", "receber_audio")
-        g.add_edge("receber_audio", "fundir")
+        g.add_edge("receber_audio", "receber_vitais")
+        g.add_edge("receber_vitais", "receber_postura")
+        g.add_edge("receber_postura", "fundir")
         g.add_conditional_edges("fundir", self._rota,
                                 {"emitir_alerta": "emitir_alerta", "registrar_ok": "registrar_ok"})
         g.add_edge("emitir_alerta", "consolidar")
@@ -168,6 +186,8 @@ class FusaoMultimodal:
         """Fallback sem LangGraph: executa os nós na mesma ordem."""
         estado = self._no_receber_video(estado)
         estado = self._no_receber_audio(estado)
+        estado = self._no_receber_vitais(estado)
+        estado = self._no_receber_postura(estado)
         estado = self._no_fundir(estado)
         if self._rota(estado) == "emitir_alerta":
             estado = self._no_emitir_alerta(estado)
@@ -176,11 +196,15 @@ class FusaoMultimodal:
         return self._no_consolidar(estado)
 
     def executar(self, relatorio_video: Dict, relatorio_audio: Dict,
-                 paciente_id: str = "N/D") -> EstadoFusao:
+                 paciente_id: str = "N/D",
+                 relatorio_vitais: Optional[Dict] = None,
+                 relatorio_postura: Optional[Dict] = None) -> EstadoFusao:
         entrada: EstadoFusao = {
             "paciente_id": paciente_id,
             "relatorio_video": relatorio_video,
             "relatorio_audio": relatorio_audio,
+            "relatorio_vitais": relatorio_vitais or {},
+            "relatorio_postura": relatorio_postura or {},
             "trilha": [],
         }
         if self.app is not None:

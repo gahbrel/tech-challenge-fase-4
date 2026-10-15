@@ -75,6 +75,12 @@ class AnaliseAudio:
     nivel_alerta: str = "verde"        # verde | amarelo | vermelho
     resumo_llm: str = ""
     backend_llm: str = ""
+    # Azure Text Analytics (ou fallback léxico)
+    sentimento: str = ""               # positive | neutral | negative | mixed
+    termos_chave: List[str] = field(default_factory=list)
+    backend_texto: str = ""            # "azure" | "lexico"
+    # Características acústicas (librosa)
+    acustica: Dict = field(default_factory=dict)
 
     def categorias(self) -> List[str]:
         return [s.categoria for s in self.sinais]
@@ -89,6 +95,10 @@ class AnaliseAudio:
             "nivel_alerta": self.nivel_alerta,
             "resumo_llm": self.resumo_llm,
             "backend_llm": self.backend_llm,
+            "sentimento": self.sentimento,
+            "termos_chave": self.termos_chave,
+            "backend_texto": self.backend_texto,
+            "acustica": self.acustica,
         }
 
 
@@ -152,13 +162,74 @@ def _resumo_llm(transcript: str, sinais: List[SinalDetectado]) -> (str, str):
         return "", ""
 
 
-def analisar(transcript: str, usar_llm: bool = True) -> AnaliseAudio:
+def _azure_text_analytics(transcript: str):
+    """
+    Azure AI Language (Text Analytics): sentimento + termos-chave.
+    Segundo serviço de nuvem, além do Speech. Requer AZURE_LANGUAGE_KEY/ENDPOINT.
+    Retorna (sentimento, termos, "azure") ou None se indisponível.
+    """
+    from .. import config
+    if not (config.AZURE_LANGUAGE_KEY and config.AZURE_LANGUAGE_ENDPOINT):
+        return None
+    try:
+        from azure.ai.textanalytics import TextAnalyticsClient
+        from azure.core.credentials import AzureKeyCredential
+        cli = TextAnalyticsClient(
+            endpoint=config.AZURE_LANGUAGE_ENDPOINT,
+            credential=AzureKeyCredential(config.AZURE_LANGUAGE_KEY),
+        )
+        sent = cli.analyze_sentiment([transcript], language="pt")[0]
+        kp = cli.extract_key_phrases([transcript], language="pt")[0]
+        sentimento = "" if sent.is_error else sent.sentiment
+        termos = [] if kp.is_error else list(kp.key_phrases)[:10]
+        return sentimento, termos, "azure"
+    except Exception:
+        return None
+
+
+def _sentimento_lexico(sinais: List[SinalDetectado]) -> str:
+    """Fallback offline: deriva um sentimento grosseiro dos sinais detectados."""
+    if any(s.categoria == "violencia_domestica" for s in sinais):
+        return "negative"
+    if sinais:
+        return "negative"
+    return "neutral"
+
+
+def analisar(transcript: str, usar_llm: bool = True,
+             caminho_audio: Optional[str] = None) -> AnaliseAudio:
     sinais = _analisar_lexico(transcript)
     nivel = _nivel(sinais)
+
     resumo, backend = ("", "")
     if usar_llm:
         resumo, backend = _resumo_llm(transcript, sinais)
+
+    # Sentimento + termos-chave: Azure Text Analytics, com fallback léxico.
+    az = _azure_text_analytics(transcript)
+    if az is not None:
+        sentimento, termos, backend_texto = az
+    else:
+        sentimento = _sentimento_lexico(sinais)
+        termos = sorted({t for s in sinais for t in s.termos})
+        backend_texto = "lexico"
+
+    # Características acústicas (quando o áudio é informado).
+    acustica: Dict = {}
+    if caminho_audio:
+        try:
+            from .acoustics import extrair
+            feats = extrair(caminho_audio)
+            acustica = feats.to_dict()
+            # sinais acústicos elevam um quadro verde para amarelo.
+            if feats.sinais and nivel == "verde":
+                nivel = "amarelo"
+        except Exception:
+            acustica = {}
+
     return AnaliseAudio(
         transcript=transcript, sinais=sinais, nivel_alerta=nivel,
         resumo_llm=resumo, backend_llm=backend,
+        sentimento=sentimento, termos_chave=termos, backend_texto=backend_texto,
+        acustica=acustica,
     )

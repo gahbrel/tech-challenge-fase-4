@@ -16,14 +16,17 @@ Fase 3 como **camada de fusão** das novas modalidades.
 |------------------------|---------------|
 | Análise de vídeo (YOLOv8) | detecção de instrumentos cirúrgicos + relatório de desvios — `src/multimodal/video/` |
 | YOLOv8 customizado | treino real (Colab/GPU) + demo sintético offline — `video/train_yolo.py` |
-| Análise de áudio | transcrição + triagem psicológica — `src/multimodal/audio/` |
-| Serviços em nuvem (Azure) | Azure Speech F0 + fallback Whisper/mock — `audio/transcribe.py` |
-| Fusão multimodal (LangGraph) | vídeo + áudio → risco combinado → alerta — `fusion/multimodal_graph.py` |
+| Análise postural | **YOLOv8-pose** (alternativa ao OpenPose): movimento, assimetria, postura defensiva — `video/pose.py` |
+| Análise de áudio | transcrição + triagem psicológica + acústica — `src/multimodal/audio/` |
+| Características vocais | **librosa**: energia, tom, ritmo, pausas (fadiga/estresse) — `audio/acoustics.py` |
+| Serviços em nuvem (Azure) | **Speech F0** (transcrição) + **Text Analytics** (sentimento/termos) — `audio/` |
+| Anomalias em sinais vitais | Isolation Forest + regras clínicas (pré-eclâmpsia, bradicardia fetal) — `src/multimodal/vitals/` |
+| Fusão multimodal (LangGraph) | vídeo + áudio + vitais + postura → risco → alerta — `fusion/multimodal_graph.py` |
 | Relatórios/alertas + auditoria | níveis de alerta + trilha auditável (herda a Fase 3) |
 
-**Funcionalidades escolhidas:** vídeo + áudio.
-**Objetivos escolhidos:** risco materno/ginecológico · bem-estar psicológico · uso de nuvem (Azure).
-**YOLOv8:** detecção de instrumentos cirúrgicos ginecológicos.
+**Funcionalidades:** vídeo (instrumentos + postura) + áudio (triagem + acústica) + sinais vitais.
+**Objetivos:** risco materno/ginecológico · violência doméstica · bem-estar psicológico · nuvem (Azure) · anomalias em tempo real.
+**YOLOv8:** detecção de instrumentos cirúrgicos ginecológicos. **Pose:** YOLOv8-pose.
 
 ---
 
@@ -34,18 +37,22 @@ src/multimodal/
 ├── video/
 │   ├── train_yolo.py     # treino YOLOv8 (real no Colab + demo sintético offline)
 │   ├── detect.py         # inferência: vídeo → detecções + vídeo anotado
+│   ├── pose.py           # análise postural (YOLOv8-pose) — movimento, assimetria
 │   └── report.py         # relatório especializado (desvios, nível de alerta)
 ├── audio/
 │   ├── transcribe.py     # Azure Speech F0 + Whisper (offline) + mock
-│   ├── analyze.py        # triagem psicológica por léxico (termos rastreados)
+│   ├── analyze.py        # triagem por léxico + Azure Text Analytics (sentimento)
+│   ├── acoustics.py      # características acústicas da voz (librosa)
 │   └── report.py         # relatório especializado de áudio
+├── vitals/
+│   └── detector.py       # anomalias em sinais vitais (Isolation Forest + regras)
 ├── fusion/
-│   └── multimodal_graph.py  # LangGraph que funde vídeo+áudio e emite o alerta
+│   └── multimodal_graph.py  # LangGraph: funde as 4 modalidades e emite o alerta
 └── config.py
-data/multimodal/{video,audio}/   # dados de demonstração
-results/multimodal/              # vídeos anotados, relatórios
-run_fase4.py                     # orquestrador (roda o fluxo completo)
-tests/test_multimodal.py
+data/multimodal/{video,audio,vitals}/   # dados de demonstração
+results/multimodal/                      # vídeos anotados, relatórios
+run_fase4.py                             # orquestrador (roda o fluxo completo)
+tests/test_multimodal.py                 # + tests/test_multimodal_extra.py
 notebooks/
 ├── 09_multimodal_fase4.ipynb          # demonstração do pipeline
 └── colab_treino_yolov8_fase4.ipynb    # treino real do YOLOv8 (Google Colab)
@@ -104,6 +111,27 @@ python run_fase4.py
 ```
 
 Sem Azure: `AUDIO_BACKEND=whisper` (offline, requer `openai-whisper`) ou `mock` (padrão).
+
+### Azure Text Analytics (sentimento + termos-chave)
+
+Segundo serviço de nuvem, além do Speech. Crie um recurso **Language** no Azure e exporte:
+
+```bash
+export AZURE_LANGUAGE_KEY="sua_chave"
+export AZURE_LANGUAGE_ENDPOINT="https://seu-recurso.cognitiveservices.azure.com/"
+python run_fase4.py
+```
+
+Sem chave, o sentimento e os termos-chave caem no **léxico local** (offline).
+
+### Sinais vitais e análise postural
+
+- **Sinais vitais:** por padrão a demo gera uma série sintética com anomalias. Para
+  dados próprios: `python run_fase4.py --vitais caminho/serie.csv` (colunas:
+  `instante, pressao_sistolica, pressao_diastolica, batimento_fetal,
+  freq_cardiaca_materna, saturacao`). Método: `VITALS_METHOD=isolation_forest` (ou `zscore`).
+- **Postura:** a demo usa keypoints sintéticos. Para um vídeo real de fisioterapia/
+  consulta: `python run_fase4.py --pose-video caminho/sessao.mp4` (usa YOLOv8-pose).
 
 ### Treino real do YOLOv8 (Google Colab)
 

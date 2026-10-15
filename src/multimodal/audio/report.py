@@ -40,11 +40,14 @@ class RelatorioAudio:
 
 
 def gerar_relatorio(transc: Transcricao, analise: AnaliseAudio) -> RelatorioAudio:
+    # Sinais de triagem = léxico + acústicos (ambos vão para a fusão).
+    sinais = [s.rotulo for s in analise.sinais]
+    sinais += list(analise.acustica.get("sinais_acusticos", []))
     return RelatorioAudio(
         fonte=transc.fonte,
         backend_transcricao=transc.backend,
         duracao_s=transc.duracao_s,
-        sinais=[s.rotulo for s in analise.sinais],
+        sinais=sinais,
         nivel_alerta=analise.nivel_alerta,
         detalhes=analise.to_dict(),
         resumo_llm=analise.resumo_llm,
@@ -52,6 +55,7 @@ def gerar_relatorio(transc: Transcricao, analise: AnaliseAudio) -> RelatorioAudi
 
 
 def formatar_texto(rel: RelatorioAudio) -> str:
+    d = rel.detalhes
     linhas = [
         "RELATÓRIO AUTOMÁTICO — ANÁLISE DE ÁUDIO DE CONSULTA",
         f"Fonte: {rel.fonte}",
@@ -59,8 +63,21 @@ def formatar_texto(rel: RelatorioAudio) -> str:
         f"Nível de alerta: {rel.nivel_alerta.upper()}",
         f"Sinais de triagem: {', '.join(rel.sinais) or 'nenhum'}",
     ]
-    for s in rel.detalhes.get("sinais", []):
+    for s in d.get("sinais", []):
         linhas.append(f"  - {s['rotulo']}: termos {s['termos']} (intensidade {s['intensidade']})")
+    # Sentimento + termos-chave (Azure Text Analytics ou fallback léxico)
+    if d.get("sentimento"):
+        linhas.append(f"Sentimento ({d.get('backend_texto','lexico')}): {d['sentimento']}"
+                      + (f" | termos-chave: {', '.join(d.get('termos_chave', [])[:6])}"
+                         if d.get("termos_chave") else ""))
+    # Características acústicas
+    ac = d.get("acustica") or {}
+    if ac.get("disponivel"):
+        linhas.append(
+            f"Acústica: energia={ac.get('energia_rms')} pitch={ac.get('pitch_medio_hz')}Hz "
+            f"pausas={ac.get('proporcao_pausas')} | sinais: "
+            f"{', '.join(ac.get('sinais_acusticos', [])) or 'nenhum'}"
+        )
     if rel.resumo_llm:
         linhas.append(f"Resumo: {rel.resumo_llm}")
     linhas.append(f"Observação: {AVISO}")

@@ -42,6 +42,23 @@ AZURE_SPEECH_KEY = os.environ.get("AZURE_SPEECH_KEY", "")
 AZURE_SPEECH_REGION = os.environ.get("AZURE_SPEECH_REGION", "")
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "base")
 
+# --- Azure AI Language (Text Analytics): sentimento + termos-chave ----------- #
+# Segundo serviço de nuvem (além do Speech). Fallback: léxico local.
+AZURE_LANGUAGE_KEY = os.environ.get("AZURE_LANGUAGE_KEY", "")
+AZURE_LANGUAGE_ENDPOINT = os.environ.get("AZURE_LANGUAGE_ENDPOINT", "")
+
+# --- Sinais vitais (detecção de anomalias) ---------------------------------- #
+VITALS_DATA_DIR = MM_DATA_DIR / "vitals"
+VITALS_RESULTS_DIR = RESULTS_DIR / "vitals"
+# VITALS_METHOD: "isolation_forest" | "zscore"
+VITALS_METHOD = os.environ.get("VITALS_METHOD", "isolation_forest")
+
+# --- Análise postural (pose) ------------------------------------------------ #
+# YOLOv8-pose como alternativa prática e instalável ao OpenPose (mesmo fim:
+# estimativa de pose 2D). Baixa o modelo dos releases do Ultralytics.
+POSE_MODEL = os.environ.get("POSE_MODEL", "yolov8n-pose.pt")
+POSE_RESULTS_DIR = RESULTS_DIR / "pose"
+
 # Classes de instrumentos do dataset de demonstração (proxy dos instrumentos
 # cirúrgicos ginecológicos do dataset público real usado no treino em GPU).
 DEMO_CLASSES = ["bisturi", "pinca", "tesoura", "afastador"]
@@ -50,6 +67,7 @@ DEMO_CLASSES = ["bisturi", "pinca", "tesoura", "afastador"]
 def ensure_dirs() -> None:
     for d in (
         VIDEO_DATA_DIR, AUDIO_DATA_DIR, VIDEO_RESULTS_DIR,
-        AUDIO_RESULTS_DIR, REPORTS_DIR,
+        AUDIO_RESULTS_DIR, REPORTS_DIR, VITALS_DATA_DIR,
+        VITALS_RESULTS_DIR, POSE_RESULTS_DIR,
     ):
         d.mkdir(parents=True, exist_ok=True)

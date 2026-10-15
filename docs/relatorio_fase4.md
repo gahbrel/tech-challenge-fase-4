@@ -27,17 +27,16 @@ Escolhas do enunciado: funcionalidades de **vídeo** e **áudio**; objetivos de
 ## 2. Fluxo multimodal
 
 ```
- VÍDEO (cirurgia)            ÁUDIO (consulta)             TEXTO/contexto (Fase 3)
-      │                           │                             │
-  YOLOv8 detect              Azure STT (F0)                 assistente/RAG
-  (instrumentos)             → transcrição                  (reaproveitado)
-      │                       → triagem psicológica              │
-  relatório vídeo            relatório áudio                     │
-      └───────────────┬───────────┴───────────────────────────── ┘
-                      ▼
-        FUSÃO (LangGraph): receber_video → receber_audio → fundir
-                      → (risco?) → emitir_alerta | registrar_ok → consolidar
-                      → auditoria (Fase 3)
+ VÍDEO (cirurgia/consulta)   ÁUDIO (consulta)        SINAIS VITAIS (gestante)
+  YOLOv8: instrumentos       Azure Speech → texto    série temporal
+  YOLOv8-pose: postura       Text Analytics: sent.   Isolation Forest +
+      │                      librosa: acústica       regras clínicas
+  relatório vídeo+postura    relatório áudio         relatório vitais
+      └──────────────┬───────────────┴───────────────────────┘
+                     ▼
+   FUSÃO (LangGraph): receber_video → receber_audio → receber_vitais
+          → receber_postura → fundir → (risco?)
+          → emitir_alerta | registrar_ok → consolidar → auditoria (Fase 3)
 ```
 
 A fusão combina os níveis de alerta das modalidades (o maior prevalece), agrega
@@ -63,25 +62,46 @@ percurso é auditável (trilha de nós + log estruturado).
 - **Relatório** (`report.py`): aplica regras de anomalia/desvio — instrumento
   fora do protocolo, baixa cobertura temporal (possível obstrução do campo),
   ausência de instrumentos — e define o nível de alerta (verde/amarelo/vermelho).
+- **Análise postural** (`pose.py`): usa **YOLOv8-pose** (keypoints COCO) como
+  alternativa prática e instalável ao **OpenPose** citado no enunciado — ambos
+  fazem estimativa de pose 2D. Calcula marcadores explicáveis (movimento médio
+  entre frames, assimetria de ombros/quadris, postura defensiva) para sinalizar
+  rigidez/desconforto em fisioterapia pós-parto e sinais não-verbais em consultas.
+  Caminho real em vídeo com pessoa; demo offline com keypoints sintéticos.
 
-### 3.2 Áudio — transcrição + triagem (`src/multimodal/audio/`)
+### 3.2 Áudio — transcrição + triagem + acústica (`src/multimodal/audio/`)
 
-- **Transcrição** (`transcribe.py`): backends intercambiáveis — **Azure AI
-  Speech (F0)** para o caminho de nuvem, **Whisper** local como alternativa
-  offline, e **mock** (transcript ao lado do áudio) para a demo. Resolução
-  automática: Azure se houver chave → Whisper se instalado → mock.
-- **Triagem** (`analyze.py`): análise por **léxico ponderado** de quatro
-  categorias — ansiedade gestacional, depressão pós-parto, fadiga hormonal e
-  possível violência doméstica. É **determinística, offline e explicável**: cada
-  sinal registra os termos que o dispararam. Opcionalmente enriquece com a LLM do
-  projeto (só com Ollama real). Violência ou intensidade alta elevam o alerta.
-- **Relatório** (`report.py`): consolida transcrição + sinais + nível + aviso de
-  triagem (não é diagnóstico; exige validação profissional).
+- **Transcrição** (`transcribe.py`): **Azure AI Speech (F0)** (nuvem), **Whisper**
+  (offline) e **mock** (transcript ao lado do áudio). Resolução automática.
+- **Triagem por léxico** (`analyze.py`): análise ponderada de quatro categorias —
+  ansiedade gestacional, depressão pós-parto, fadiga hormonal e possível violência
+  doméstica. Determinística, offline e **explicável** (registra os termos).
+- **Azure Text Analytics** (`analyze.py`): **segundo serviço de nuvem**, extrai
+  **sentimento** e **termos-chave** da transcrição. Fallback = sentimento/termos
+  derivados do léxico (offline). Marca a integração de nuvem além do Speech.
+- **Características acústicas** (`acoustics.py`): com **librosa**, extrai energia,
+  tom (F0 e variação), ritmo de fala e proporção de pausas — analisa *como* a
+  paciente fala, não só o que fala. Sinaliza fadiga/baixo ânimo e tensão/estresse;
+  um sinal acústico eleva um quadro verde para amarelo.
+- **Relatório** (`report.py`): consolida transcrição + sinais (léxico + acústicos)
+  + sentimento + nível + aviso de triagem (não é diagnóstico).
 
-### 3.3 Texto/contexto — Fase 3 reaproveitada
+### 3.3 Sinais vitais — detecção de anomalias (`src/multimodal/vitals/`)
+
+Monitora séries temporais de sinais vitais maternos (pressão arterial, batimentos
+fetais, FC materna, saturação) combinando **duas abordagens**:
+- **Regras clínicas** (faixas de referência obstétricas): PA ≥ 140/90 →
+  hipertensão gestacional; ≥ 160/110 → possível pré-eclâmpsia; BCF < 110 ou > 160
+  → fora da faixa; < 100 → bradicardia fetal. Explicáveis e determinísticas.
+- **Modelo de detecção de anomalias** (`Isolation Forest`, scikit-learn; z-score
+  como alternativa) — captura desvios estatísticos para monitoramento preventivo.
+Séries de demonstração são sintéticas, com anomalias injetadas (pico hipertensivo,
+bradicardia fetal). Define o nível de alerta e entra na fusão.
+
+### 3.4 Texto/contexto — Fase 3 reaproveitada
 
 O assistente, o RAG e a base de pacientes da Fase 3 permanecem disponíveis como
-camada de contexto e são o alicerce do fluxo de decisão reusado na fusão.
+camada de contexto e alicerce do fluxo de decisão reusado na fusão.
 
 ---
 
@@ -91,9 +111,14 @@ Implementada com **LangGraph** (`multimodal_graph.py`), no mesmo padrão da Fase
 (nós de estado + roteamento condicional), com **fallback para runner Python puro**
 quando o LangGraph não está instalado — garantindo portabilidade.
 
-Nós: `receber_video` → `receber_audio` → `fundir` → (roteamento por risco) →
-`emitir_alerta` **ou** `registrar_ok` → `consolidar`. Cada emissão de alerta ou
+A fusão coordena **quatro modalidades**: vídeo (instrumentos + postura), áudio
+(triagem + acústica), sinais vitais e — como contexto — a camada textual da
+Fase 3. Nós: `receber_video` → `receber_audio` → `receber_vitais` →
+`receber_postura` → `fundir` → (roteamento por risco) → `emitir_alerta` **ou**
+`registrar_ok` → `consolidar`. A regra de fusão é o **maior nível entre as
+modalidades**, com os achados agregados por modalidade. Cada emissão de alerta ou
 registro gera um `AuditEvent` (auditoria da Fase 3), tornando a fusão rastreável.
+A assinatura é retrocompatível: chamadas antigas (só vídeo + áudio) seguem válidas.
 
 ---
 
@@ -124,20 +149,31 @@ Execução de demonstração (offline, `python run_fase4.py`):
   detectou ansiedade, depressão pós-parto e **possível violência doméstica**
   (termos: "me empurrou", "tenho medo dele", "não posso sair", "ele controla",
   "grita comigo") → alerta VERMELHO.
-- **Fusão:** risco combinado = **VERMELHO** (o maior nível prevalece) → **alerta
-  multimodal emitido** para a equipe, com achados agregados e trilha auditável
-  `receber_video → receber_audio → fundir → emitir_alerta → consolidar`.
+- **Áudio (cenário de fadiga pós-parto):** a acústica (librosa) detectou voz de
+  baixa energia e muitas pausas → **fadiga/baixo ânimo**; o sentimento resultou
+  **negative** (Azure Text Analytics ou fallback léxico).
+- **Sinais vitais:** a série demo acionou **pré-eclâmpsia** (PA 169/116) por regra
+  clínica e **bradicardia fetal** (BCF 98), com o Isolation Forest confirmando os
+  desvios estatísticos → alerta VERMELHO.
+- **Postura (YOLOv8-pose):** no cenário de desconforto, movimento reduzido +
+  assimetria de ombros + postura defensiva → alerta AMARELO.
+- **Fusão:** risco combinado = **VERMELHO** (o maior nível entre as modalidades
+  prevalece) → **alerta multimodal** para a equipe, com achados agregados das
+  quatro modalidades e trilha auditável `receber_video → receber_audio →
+  receber_vitais → receber_postura → fundir → emitir_alerta → consolidar`.
 
-**Métricas de avaliação (vídeo):** mAP50 e mAP50-95 do YOLOv8 sobre o conjunto de
-validação. **Áudio:** a triagem é avaliada qualitativamente por cenário (os testes
-verificam que violência → vermelho, ausência de sinais → verde, e que os termos
-são registrados). 7 testes automatizados cobrem áudio e fusão.
+**Métricas de avaliação (vídeo):** mAP50 e mAP50-95 do YOLOv8 sobre validação
+(demo: mAP50 = 0,96). **Áudio/vitais/postura:** avaliação qualitativa por cenário,
+coberta por testes automatizados (violência → vermelho, pré-eclâmpsia/bradicardia
+→ vermelho, desconforto postural → amarelo, ausência de sinais → verde). Ao todo,
+**17 testes** cobrem áudio, vitais, postura, Text Analytics e a fusão de 4 modalidades.
 
-**Limitações.** (i) O detector de demonstração usa dados sintéticos — o treino
-real com o dataset público de instrumentos (Colab) é o caminho de produção;
-(ii) a triagem por léxico é um *screening* explicável, não um classificador
-clínico validado; (iii) a validade clínica dos áudios/vídeos de demo não é o foco
-— o foco é o *pipeline* multimodal.
+**Limitações.** (i) Detector e séries de demonstração usam dados sintéticos — os
+caminhos reais (dataset público de instrumentos no Colab; vídeo com pessoa para a
+pose; Azure com chave; monitores reais para os sinais vitais) são plugáveis;
+(ii) as triagens por léxico/acústica/pose são *screening* explicável, não
+classificadores clínicos validados; (iii) o foco é o *pipeline* multimodal, não a
+validade clínica dos exemplos de demo.
 
 ---
 
