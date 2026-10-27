@@ -1,0 +1,5 @@
+path: /home/claude/f4/tech-challenge-fase-3-main/data/multimodal/video/demo_instrumentos
+train: images/train
+val: images/val
+nc: 4
+names: ['bisturi', 'pinca', 'tesoura', 'afastador']

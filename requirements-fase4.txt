@@ -1,0 +1,31 @@
+# Requisitos da Fase 4 — pipeline multimodal (saúde da mulher)
+# Instale por cima do requirements.txt do projeto:
+#   pip install -r requirements.txt -r requirements-fase4.txt
+
+# --- Vídeo (YOLOv8) --------------------------------------------------------- #
+ultralytics>=8.2,<9        # YOLOv8 (treino + inferência); traz torch e opencv
+# opencv-python já vem como dependência do ultralytics
+
+# --- Fusão (LangGraph) ------------------------------------------------------ #
+langgraph>=1.0             # grafo de fusão multimodal (há fallback puro se ausente)
+langchain-core>=1.0
+
+# --- Áudio: transcrição ----------------------------------------------------- #
+azure-cognitiveservices-speech>=1.38   # Azure AI Speech / Speech-to-Text (tier F0)
+# openai-whisper>=20231117             # (opcional) fallback offline p/ transcrição
+
+# --- Áudio: características acústicas (voz) ---------------------------------- #
+librosa>=0.10              # energia, pitch, ritmo e pausas da fala
+
+# --- Áudio: Azure Text Analytics (sentimento + termos-chave) ---------------- #
+azure-ai-textanalytics>=5.3   # 2º serviço de nuvem; fallback = léxico local
+
+# --- Sinais vitais (detecção de anomalias) ---------------------------------- #
+# scikit-learn já consta no requirements.txt do projeto (Isolation Forest)
+
+# Observações:
+# - A demonstração roda OFFLINE sem Azure: transcrição cai no mock, sentimento no
+#   léxico, vídeo usa o best.pt demo, pose/vitais usam dados sintéticos.
+# - Treino real do YOLOv8 (instrumentos): GPU/Colab. Pose usa yolov8n-pose.
+# - Azure Speech: AZURE_SPEECH_KEY + AZURE_SPEECH_REGION (tier F0).
+# - Azure Text Analytics: AZURE_LANGUAGE_KEY + AZURE_LANGUAGE_ENDPOINT.
